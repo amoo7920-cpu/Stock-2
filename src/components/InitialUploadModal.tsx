@@ -3,7 +3,7 @@ import { DailyInventoryReport, DiscrepancyItem, TransitStockItem, StorageLocatio
 import { parseCSVData } from '../utils/csvParser';
 import { sampleDiscrepancies, sampleTransitStock, sampleSlocDiscrepancies } from '../data/sampleData';
 import { analyzeAllDiscrepancies } from '../utils/analysis';
-import { UploadCloud, FileSpreadsheet, Plus, AlertCircle, Info, Check, RefreshCw, Layers } from 'lucide-react';
+import { UploadCloud, FileSpreadsheet, Plus, AlertCircle, Info, Check, Trash2, FileText } from 'lucide-react';
 
 interface InitialUploadModalProps {
   isOpen: boolean;
@@ -18,23 +18,140 @@ export default function InitialUploadModal({
 }: InitialUploadModalProps) {
   const [importDate, setImportDate] = useState('2026-09-08');
   const [dailyNote, setDailyNote] = useState('실시간 ERP-WMS 데이터 연동 대사 작업 진행.');
-  const [activeSubTab, setActiveSubTab] = useState<'AUTO' | 'PASTE'>('AUTO');
+  const [activeSubTab, setActiveSubTab] = useState<'BATCH' | 'AUTO' | 'PASTE'>('BATCH');
   
-  // Custom CSV uploads
+  // Custom CSV text states
   const [qtyText, setQtyText] = useState('');
   const [statusText, setStatusText] = useState('');
   const [slocText, setSlocText] = useState('');
   const [transitText, setTransitText] = useState('');
+
+  // Batch files tracking state
+  const [batchFiles, setBatchFiles] = useState<{
+    QTY?: { name: string; size: number };
+    STATUS?: { name: string; size: number };
+    SLOC?: { name: string; size: number };
+    TRANSIT?: { name: string; size: number };
+  }>({});
 
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
   if (!isOpen) return null;
 
+  // Helper: Auto detect file type from CSV text content
+  const detectFileType = (text: string): 'QTY' | 'STATUS' | 'SLOC' | 'TRANSIT' | 'UNKNOWN' => {
+    const lines = text.split(/\r?\n/).slice(0, 15).map(l => l.trim().toLowerCase()).filter(l => l.length > 0);
+    for (const line of lines) {
+      if (
+        line.includes('wms_구분') || 
+        line.includes('wms 수량') || 
+        line.includes('wms수량') || 
+        (line.includes('wms_') && line.includes('erp_') && line.includes('차이 수량'))
+      ) {
+        return 'QTY';
+      }
+      if (
+        line.includes('w_검사') || 
+        line.includes('w_가용') || 
+        line.includes('w_보류') || 
+        line.includes('e_가용') || 
+        line.includes('wms_blocked') || 
+        line.includes('w_blocked')
+      ) {
+        return 'STATUS';
+      }
+      if (
+        line.includes('wms_창고') || 
+        line.includes('erp_창고') || 
+        line.includes('wms_sloc') || 
+        line.includes('erp_sloc')
+      ) {
+        return 'SLOC';
+      }
+      if (
+        line.includes('plant(송하)') || 
+        line.includes('s. loc.(송하)') || 
+        line.includes('박스일련번호') || 
+        line.includes('송하')
+      ) {
+        return 'TRANSIT';
+      }
+    }
+    return 'UNKNOWN';
+  };
+
+  // Process selected or dropped multiple files
+  const processBatchFiles = (files: File[]) => {
+    setErrorMsg('');
+    setSuccessMsg('');
+    
+    let recognizedCount = 0;
+    let unknownCount = 0;
+
+    files.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result as string;
+        if (!text) return;
+
+        const fileType = detectFileType(text);
+        if (fileType !== 'UNKNOWN') {
+          recognizedCount++;
+          if (fileType === 'QTY') {
+            setQtyText(text);
+            setBatchFiles(prev => ({ ...prev, QTY: { name: file.name, size: file.size } }));
+          } else if (fileType === 'STATUS') {
+            setStatusText(text);
+            setBatchFiles(prev => ({ ...prev, STATUS: { name: file.name, size: file.size } }));
+          } else if (fileType === 'SLOC') {
+            setSlocText(text);
+            setBatchFiles(prev => ({ ...prev, SLOC: { name: file.name, size: file.size } }));
+          } else if (fileType === 'TRANSIT') {
+            setTransitText(text);
+            setBatchFiles(prev => ({ ...prev, TRANSIT: { name: file.name, size: file.size } }));
+          }
+        } else {
+          unknownCount++;
+        }
+
+        if (recognizedCount > 0) {
+          setSuccessMsg(`성공: 총 ${recognizedCount}개 파일의 대사 유형을 자동 인식하여 정상 매핑했습니다.`);
+        }
+        if (unknownCount > 0) {
+          setErrorMsg(`주의: ${unknownCount}개 파일은 내부 헤더가 매칭되지 않아 분류하지 못했습니다. (확장자 .csv 파일만 가능)`);
+        }
+      };
+      reader.readAsText(file);
+    });
+  };
+
+  const clearFile = (type: 'QTY' | 'STATUS' | 'SLOC' | 'TRANSIT') => {
+    if (type === 'QTY') {
+      setQtyText('');
+      setBatchFiles(prev => { const copy = { ...prev }; delete copy.QTY; return copy; });
+    } else if (type === 'STATUS') {
+      setStatusText('');
+      setBatchFiles(prev => { const copy = { ...prev }; delete copy.STATUS; return copy; });
+    } else if (type === 'SLOC') {
+      setSlocText('');
+      setBatchFiles(prev => { const copy = { ...prev }; delete copy.SLOC; return copy; });
+    } else if (type === 'TRANSIT') {
+      setTransitText('');
+      setBatchFiles(prev => { const copy = { ...prev }; delete copy.TRANSIT; return copy; });
+    }
+  };
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    const kb = bytes / 1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB`;
+    return `${(kb / 1024).toFixed(1)} MB`;
+  };
+
   // Option 1: Load sample sheet as pristine uploaded data (Clearing background dummy sample reports)
   const handleLoadActualSampleData = () => {
     try {
-      // Create fresh pristine report based on the user's actual sample sheet
       const analyzedDiscrepancies = analyzeAllDiscrepancies(sampleDiscrepancies, sampleTransitStock);
       
       const newReport: DailyInventoryReport = {
@@ -57,7 +174,7 @@ export default function InitialUploadModal({
     }
   };
 
-  // Option 2: Parse manually pasted CSV files (4 Files)
+  // Option 2: Parse manually pasted or batch-uploaded CSV files
   const handleCustomCSVUpload = () => {
     if (!qtyText && !statusText && !slocText && !transitText) {
       setErrorMsg('업로드 또는 복사 붙여넣기할 CSV 텍스트가 비어 있습니다.');
@@ -78,7 +195,6 @@ export default function InitialUploadModal({
       // Parse Block 2 (Status)
       if (statusText) {
         const parsed = parseCSVData(statusText);
-        // Merge state status info into discrepancies
         parsed.discrepancies.forEach(item => {
           const match = mergedDiscrepancies.find(d => d.material === item.material && d.lotNo === item.lotNo && d.sloc === item.sloc);
           if (match) {
@@ -108,7 +224,7 @@ export default function InitialUploadModal({
         mergedTransit = [...mergedTransit, ...parsed.transitStock];
       }
 
-      // Fallback fallback if they pasted mixed columns in Qty field
+      // Fallback if they pasted mixed columns in Qty field
       if (qtyText && mergedDiscrepancies.length === 0 && mergedTransit.length === 0) {
         const parsedAll = parseCSVData(qtyText);
         mergedDiscrepancies = parsedAll.discrepancies;
@@ -129,7 +245,7 @@ export default function InitialUploadModal({
       };
 
       onUploadSuccess(newReport);
-      setSuccessMsg('4개 업로드 파일의 데이터 분석 및 연동이 성공적으로 처리되었습니다!');
+      setSuccessMsg('업로드 파일의 데이터 분석 및 연동이 성공적으로 처리되었습니다!');
       setErrorMsg('');
       setTimeout(() => {
         onClose();
@@ -147,7 +263,7 @@ export default function InitialUploadModal({
         <div className="p-6 border-b border-slate-100 flex justify-between items-start bg-slate-50">
           <div>
             <div className="flex items-center gap-2">
-              <span className="p-1.5 bg-indigo-900 text-white rounded-lg">
+              <span className="p-1.5 bg-indigo-950 text-white rounded-lg">
                 <UploadCloud className="w-5 h-5 animate-bounce" />
               </span>
               <h2 className="text-base font-bold text-slate-900">ERP-WMS 4대 핵심 파일 업로드 연동</h2>
@@ -189,28 +305,200 @@ export default function InitialUploadModal({
           {/* Sub Tabs */}
           <div className="flex border-b border-slate-150">
             <button
-              onClick={() => setActiveSubTab('AUTO')}
+              onClick={() => setActiveSubTab('BATCH')}
               className={`flex-1 py-2 text-xs font-bold text-center border-b-2 transition-all ${
-                activeSubTab === 'AUTO'
-                  ? 'border-slate-900 text-slate-900 font-black'
+                activeSubTab === 'BATCH'
+                  ? 'border-indigo-950 text-indigo-950 font-black'
                   : 'border-transparent text-slate-400 hover:text-slate-700'
               }`}
             >
-              실제 샘플 파일 즉시 연동하기
+              🚀 한 번에 일괄 업로드
+            </button>
+            <button
+              onClick={() => setActiveSubTab('AUTO')}
+              className={`flex-1 py-2 text-xs font-bold text-center border-b-2 transition-all ${
+                activeSubTab === 'AUTO'
+                  ? 'border-indigo-950 text-indigo-950 font-black'
+                  : 'border-transparent text-slate-400 hover:text-slate-700'
+              }`}
+            >
+              💡 실제 샘플 즉시 로드
             </button>
             <button
               onClick={() => setActiveSubTab('PASTE')}
               className={`flex-1 py-2 text-xs font-bold text-center border-b-2 transition-all ${
                 activeSubTab === 'PASTE'
-                  ? 'border-slate-900 text-slate-900 font-black'
+                  ? 'border-indigo-950 text-indigo-950 font-black'
                   : 'border-transparent text-slate-400 hover:text-slate-700'
               }`}
             >
-              사용자 CSV 직접 업로드 / 붙여넣기 (4파일)
+              ✍️ 수동 개별 입력
             </button>
           </div>
 
-          {/* Tab 1: One-Click Load Actual Samples */}
+          {/* Tab 1: Batch Drag and Drop (Recommended) */}
+          {activeSubTab === 'BATCH' && (
+            <div className="space-y-4 pt-1">
+              <div 
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (e.dataTransfer.files) {
+                    processBatchFiles(Array.from(e.dataTransfer.files));
+                  }
+                }}
+                className="border-2 border-dashed border-slate-200 hover:border-slate-400 bg-slate-50/50 rounded-xl p-6 text-center cursor-pointer transition-colors"
+                onClick={() => document.getElementById('batch-file-input')?.click()}
+              >
+                <input
+                  type="file"
+                  id="batch-file-input"
+                  multiple
+                  accept=".csv,.txt"
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files) {
+                      processBatchFiles(Array.from(e.target.files));
+                    }
+                  }}
+                />
+                <div className="flex flex-col items-center justify-center gap-2">
+                  <span className="p-3 bg-indigo-50 text-indigo-950 rounded-full">
+                    <UploadCloud className="w-8 h-8 animate-pulse" />
+                  </span>
+                  <div>
+                    <p className="text-xs font-bold text-slate-800">
+                      여기에 복수의 대사 파일(CSV)을 한 번에 드래그하거나 클릭하여 일괄 선택하세요
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      WMS vs ERP 수량 비교, 상태별 재고, 저장위치별 비교, 이송중 재고 상세 파일을 지능형 자동 분석 매핑합니다.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Status checklist */}
+              <div className="space-y-2">
+                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                  핵심 4대 파일 일괄 매핑 현황
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  
+                  {/* File 1: QTY */}
+                  <div className={`p-3 rounded-lg border transition-all flex items-center justify-between ${
+                    batchFiles.QTY 
+                      ? 'bg-emerald-50/50 border-emerald-200 text-emerald-900' 
+                      : 'bg-white border-slate-150 text-slate-600'
+                  }`}>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className={`w-2.5 h-2.5 rounded-full ${batchFiles.QTY ? 'bg-emerald-500' : 'bg-slate-200'}`} />
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold truncate">1. 수량 비교 대사 (QTY)</p>
+                        <p className="text-[10px] text-slate-400 font-mono truncate">
+                          {batchFiles.QTY ? `${batchFiles.QTY.name} (${formatSize(batchFiles.QTY.size)})` : '파일 업로드 대기 중'}
+                        </p>
+                      </div>
+                    </div>
+                    {batchFiles.QTY && (
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); clearFile('QTY'); }}
+                        className="text-xs text-rose-500 hover:text-rose-700 font-bold px-1.5 py-0.5 hover:bg-rose-50 rounded"
+                      >
+                        삭제
+                      </button>
+                    )}
+                  </div>
+
+                  {/* File 2: STATUS */}
+                  <div className={`p-3 rounded-lg border transition-all flex items-center justify-between ${
+                    batchFiles.STATUS 
+                      ? 'bg-emerald-50/50 border-emerald-200 text-emerald-900' 
+                      : 'bg-white border-slate-150 text-slate-600'
+                  }`}>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className={`w-2.5 h-2.5 rounded-full ${batchFiles.STATUS ? 'bg-emerald-500' : 'bg-slate-200'}`} />
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold truncate">2. 상태별 재고 대사 (STATUS)</p>
+                        <p className="text-[10px] text-slate-400 font-mono truncate">
+                          {batchFiles.STATUS ? `${batchFiles.STATUS.name} (${formatSize(batchFiles.STATUS.size)})` : '파일 업로드 대기 중'}
+                        </p>
+                      </div>
+                    </div>
+                    {batchFiles.STATUS && (
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); clearFile('STATUS'); }}
+                        className="text-xs text-rose-500 hover:text-rose-700 font-bold px-1.5 py-0.5 hover:bg-rose-50 rounded"
+                      >
+                        삭제
+                      </button>
+                    )}
+                  </div>
+
+                  {/* File 3: SLOC */}
+                  <div className={`p-3 rounded-lg border transition-all flex items-center justify-between ${
+                    batchFiles.SLOC 
+                      ? 'bg-emerald-50/50 border-emerald-200 text-emerald-900' 
+                      : 'bg-white border-slate-150 text-slate-600'
+                  }`}>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className={`w-2.5 h-2.5 rounded-full ${batchFiles.SLOC ? 'bg-emerald-500' : 'bg-slate-200'}`} />
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold truncate">3. 저장위치 대사 (SLOC)</p>
+                        <p className="text-[10px] text-slate-400 font-mono truncate">
+                          {batchFiles.SLOC ? `${batchFiles.SLOC.name} (${formatSize(batchFiles.SLOC.size)})` : '파일 업로드 대기 중'}
+                        </p>
+                      </div>
+                    </div>
+                    {batchFiles.SLOC && (
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); clearFile('SLOC'); }}
+                        className="text-xs text-rose-500 hover:text-rose-700 font-bold px-1.5 py-0.5 hover:bg-rose-50 rounded"
+                      >
+                        삭제
+                      </button>
+                    )}
+                  </div>
+
+                  {/* File 4: TRANSIT */}
+                  <div className={`p-3 rounded-lg border transition-all flex items-center justify-between ${
+                    batchFiles.TRANSIT 
+                      ? 'bg-emerald-50/50 border-emerald-200 text-emerald-900' 
+                      : 'bg-white border-slate-150 text-slate-600'
+                  }`}>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className={`w-2.5 h-2.5 rounded-full ${batchFiles.TRANSIT ? 'bg-emerald-500' : 'bg-slate-200'}`} />
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold truncate">4. 이송중 재고 상세 (TRANSIT)</p>
+                        <p className="text-[10px] text-slate-400 font-mono truncate">
+                          {batchFiles.TRANSIT ? `${batchFiles.TRANSIT.name} (${formatSize(batchFiles.TRANSIT.size)})` : '파일 업로드 대기 중'}
+                        </p>
+                      </div>
+                    </div>
+                    {batchFiles.TRANSIT && (
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); clearFile('TRANSIT'); }}
+                        className="text-xs text-rose-500 hover:text-rose-700 font-bold px-1.5 py-0.5 hover:bg-rose-50 rounded"
+                      >
+                        삭제
+                      </button>
+                    )}
+                  </div>
+
+                </div>
+              </div>
+
+              <button
+                onClick={handleCustomCSVUpload}
+                disabled={!qtyText && !statusText && !slocText && !transitText}
+                className="w-full py-3 bg-indigo-950 hover:bg-indigo-900 disabled:bg-slate-100 disabled:text-slate-400 text-white font-bold text-xs rounded-xl shadow-md transition-colors flex items-center justify-center gap-1.5"
+              >
+                <Check className="w-4 h-4" />
+                업로드된 파일 일괄 대사 분석 및 구동
+              </button>
+            </div>
+          )}
+
+          {/* Tab 2: One-Click Load Actual Samples */}
           {activeSubTab === 'AUTO' && (
             <div className="space-y-4 pt-2">
               <div className="bg-slate-50 border border-slate-150 rounded-xl p-4 space-y-3">
@@ -239,7 +527,7 @@ export default function InitialUploadModal({
             </div>
           )}
 
-          {/* Tab 2: Custom Text Paste / Drag and Drop */}
+          {/* Tab 3: Custom Text Paste */}
           {activeSubTab === 'PASTE' && (
             <div className="space-y-4 pt-1">
               <div className="text-[11px] text-slate-400 bg-slate-50 p-2.5 rounded-lg border border-slate-150 leading-relaxed">
@@ -258,7 +546,7 @@ export default function InitialUploadModal({
                     value={qtyText}
                     onChange={(e) => setQtyText(e.target.value)}
                     rows={4}
-                    className="w-full text-[9px] font-mono border border-slate-200 rounded-lg p-2 focus:outline-none focus:ring-1 focus:ring-slate-900 bg-slate-50/20"
+                    className="w-full text-[9px] font-mono border border-slate-200 rounded-lg p-2 focus:outline-none focus:ring-1 focus:ring-slate-950 bg-slate-50/20"
                   />
                 </div>
 
@@ -273,7 +561,7 @@ export default function InitialUploadModal({
                     value={statusText}
                     onChange={(e) => setStatusText(e.target.value)}
                     rows={4}
-                    className="w-full text-[9px] font-mono border border-slate-200 rounded-lg p-2 focus:outline-none focus:ring-1 focus:ring-slate-900 bg-slate-50/20"
+                    className="w-full text-[9px] font-mono border border-slate-200 rounded-lg p-2 focus:outline-none focus:ring-1 focus:ring-slate-950 bg-slate-50/20"
                   />
                 </div>
 
@@ -288,7 +576,7 @@ export default function InitialUploadModal({
                     value={slocText}
                     onChange={(e) => setSlocText(e.target.value)}
                     rows={4}
-                    className="w-full text-[9px] font-mono border border-slate-200 rounded-lg p-2 focus:outline-none focus:ring-1 focus:ring-slate-900 bg-slate-50/20"
+                    className="w-full text-[9px] font-mono border border-slate-200 rounded-lg p-2 focus:outline-none focus:ring-1 focus:ring-slate-950 bg-slate-50/20"
                   />
                 </div>
 
@@ -303,7 +591,7 @@ export default function InitialUploadModal({
                     value={transitText}
                     onChange={(e) => setTransitText(e.target.value)}
                     rows={4}
-                    className="w-full text-[9px] font-mono border border-slate-200 rounded-lg p-2 focus:outline-none focus:ring-1 focus:ring-slate-900 bg-slate-50/20"
+                    className="w-full text-[9px] font-mono border border-slate-200 rounded-lg p-2 focus:outline-none focus:ring-1 focus:ring-slate-950 bg-slate-50/20"
                   />
                 </div>
               </div>
@@ -337,7 +625,7 @@ export default function InitialUploadModal({
         {/* Footer */}
         <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-between items-center text-[10px] text-slate-400 font-bold">
           <span>* 업로드 완료 후, 대시보드에 즉시 연동 반영되며 이전의 기본 샘플은 소거됩니다.</span>
-          <span>WMS-ERP Reconciler v1.2</span>
+          <span>WMS-ERP Reconciler v1.3</span>
         </div>
 
       </div>

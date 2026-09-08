@@ -1,0 +1,6 @@
+{
+  "name": "WMS-ERP 재고 차이 일자별 관리 시스템",
+  "description": "WMS와 ERP 시스템의 재고수량 및 상태 차이를 일자별로 기록하고, 이송중 재고 및 상태 불일치 등 차이 원인을 자동으로 분석하여 관리하는 시스템입니다.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
